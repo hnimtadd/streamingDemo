@@ -1,0 +1,22 @@
+FROM golang:alpine as builder
+# RUN apk update && apk add build-base --no-cache
+RUN apk update && apk add build-base
+
+RUN mkdir -p /video-analytics
+WORKDIR /video-analytics
+
+# Copying directories that aren't likely subject to change
+
+# Copying directories that changes often
+COPY  ./go.mod go.mod
+COPY  ./go.sum go.sum
+COPY  ./main-service main-service
+
+ENV CGO_ENABLED=1
+ENV GOOS=linux
+ENV GOARCH=amd64
+
+RUN go install -tags "musl,netgo" -ldflags="-s -w" ./main-service/...
+
+WORKDIR /
+RUN rm /video-analytics -rf

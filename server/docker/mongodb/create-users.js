@@ -1,0 +1,1 @@
+db.createUser( { user: 'vinai_User', pwd: 'vinai_Password', roles: [ { role: 'readWrite', db: 'video_analytics' }]})

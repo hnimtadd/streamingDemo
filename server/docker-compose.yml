@@ -1,0 +1,222 @@
+version: "3.9"
+networks:
+  microservice_network:
+    driver: bridge
+
+volumes:
+  mysqldb_data:
+    driver: local
+    external: false
+    driver_opts:
+      type: 'nfs'
+      o: 'bind'
+      device: './data/mysqldb'
+
+  mongodb_data:
+    driver: local
+    external: false
+    driver_opts:
+      type: 'nfs'
+      o: 'bind'
+      device: './data/mongodb'
+
+  mysqldb_data_rep1:
+    driver: local
+    external: false
+    driver_opts:
+      type: 'nfs'
+      o: 'bind'
+      device: './data/mysqldb_rep1'
+
+  zookeeper_data:
+    driver: local
+    external: false
+    driver_opts:
+      type: 'nfs'
+      o: 'bind'
+      device: './data/zookeeper'
+
+  kafka_data:
+    driver: local
+    external: false
+    driver_opts:
+      type: 'nfs'
+      o: 'bind'
+      device: './data/kafka'
+
+  mongodb_config:
+    driver: local
+    external: false
+    driver_opts:
+      type: 'nfs'
+      o: 'bind'
+      device: './data/mongodb_config'
+
+services:
+  hls-streaming-service:
+    container_name: hls-streaming-service
+    entrypoint: main-service
+    image: vinai-video-analytics-hls-streaming-service:1.1
+    restart: always
+    ports:
+      - 10077:10077
+    expose:
+      - 10077
+    depends_on:
+      - kafka
+      - video-analytics-mysql-hls-streaming
+    networks:
+      - microservice_network
+    volumes:
+      - "/etc/timezone:/etc/timezone:ro"
+      - "/etc/localtime:/etc/localtime:ro"
+  zookeeper:
+    image: confluentinc/cp-zookeeper:latest
+    hostname: zookeeper
+    container_name: zookeeper
+    restart: always
+    environment:
+      - ZOOKEEPER_CLIENT_PORT=2181
+      - ZOOKEEPER_TICK_TIME=2000
+    volumes:
+      - zookeeper_data:/data
+      - zookeeper_data:/datalog
+    ports:
+      - 2181:2181
+    logging:
+      driver: none
+    networks:
+      - microservice_network
+  kafka:
+    image: confluentinc/cp-kafka:latest
+    container_name: kafka
+    restart: always
+    volumes:
+      - kafka_data:/data
+      - kafka_data:/datalog
+    depends_on:
+      - zookeeper
+    ports:
+      - 39092:39092
+      - 19092:19092
+    expose:
+      - 39092
+      - 19092
+    networks:
+      - microservice_network
+    # logging:
+    #   driver: none
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:19092,PLAINTEXT_HOST://localhost:39092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+  init-kafka:
+    image: confluentinc/cp-kafka:latest
+    depends_on:
+      - kafka
+    entrypoint: [ '/bin/sh', '-c' ]
+    networks:
+      - microservice_network
+    command: |
+      "
+      # blocks until kafka is reachable
+      kafka-topics --bootstrap-server kafka:19092 --list
+
+      echo -e 'Creating kafka topics'
+      kafka-topics --bootstrap-server kafka:19092 --create --if-not-exists --topic CAMERA_MANAGEMENT --replication-factor 1 --partitions 1
+
+      echo -e 'All current kafka topics:'
+      kafka-topics --bootstrap-server kafka:19092 --list
+      "
+  kafka-ui:
+    image: provectuslabs/kafka-ui
+    container_name: kafka-ui
+    ports:
+      - "8082:8080"
+    restart: always
+    networks:
+      - microservice_network
+    environment:
+      - KAFKA_CLUSTERS_0_NAME=local
+      - KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS=kafka:19092
+      - KAFKA_CLUSTERS_0_ZOOKEEPER=zookeeper:2181
+      - SPRING_SECURITY_USER_NAME=vinaiadmin
+      - SPRING_SECURITY_USER_PASSWORD=passw0rD123
+      - AUTH_TYPE=LOGIN_FORM
+  video-analytics-mysql-hls-streaming:
+    container_name: video-analytics-mysql-hls-streaming
+    image: mysql:8
+    restart: always
+    expose:
+      - 3306
+    ports:
+      - 3306:3306
+    volumes:
+      - mysqldb_data:/var/lib/mysql
+      - ./data/initdb/:/docker-entrypoint-initdb.d/
+    environment:
+      - MYSQL_ROOT_PASSWORD=vinai_Password
+      - MYSQL_PASSWORD=vinai_Password
+      - MYSQL_USER=vinai_User
+      - MYSQL_DATABASE=video_analytics
+    healthcheck:
+      test: mysqladmin --user=$$MYSQL_USER --password=$$MYSQL_PASSWORD ping
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    # logging:
+    #   driver: none
+    networks:
+      - microservice_network
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+  mongodb-installer-hls-streaming:
+    image: mongo:latest
+    networks:
+      - microservice_network
+    volumes:
+      - ./docker/mongodb_installer:/scripts:ro
+    entrypoint: [ "/scripts/setup.sh" ]
+    environment:
+      - MONGO_INITDB_ROOT_USERNAME=vinai_User
+      - MONGO_INITDB_ROOT_PASSWORD=vinai_Password
+      - MONGO_INITDB_DATABASE=video_analytics_hls_streaming
+    depends_on:
+      - video-analytics-mongodb-hls-streaming
+
+  video-analytics-mongodb-hls-streaming:
+    hostname: video-analytics-mongodb-hls-streaming
+    container_name: video-analytics-mongodb-hls-streaming
+    restart: always
+    image: mongo:latest
+    entrypoint: [ "/usr/bin/mongod", "--bind_ip_all", "--journal", "--dbpath", "/data/db"]
+    expose:
+      - 27017
+    ports:
+      - 27017:27017
+    volumes:
+      - mongodb_data:/data/db
+      - mongodb_config:/data/configdb
+      - ./docker/mongodb:/scripts:ro
+    environment:
+      - MONGO_INITDB_ROOT_USERNAME=vinai_User
+      - MONGO_INITDB_ROOT_PASSWORD=vinai_Password
+      - MONGO_INITDB_DATABASE=video_analytics_hls_streaming
+    healthcheck:
+      test: test $$(echo "rs.initiate().ok || rs.status().ok" | mongosh -u $${MONGO_INITDB_ROOT_USERNAME} -p $${MONGO_INITDB_ROOT_PASSWORD} --authenticationDatabase video_analytics --quiet) -eq 1
+      interval: 15s
+      timeout: 10s
+      retries: 5
+    # logging:
+    #   driver: none
+    networks:
+      - microservice_network
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+
+
